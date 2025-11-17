@@ -910,14 +910,16 @@ const cct = (bufs: Uint8Array[], ol: number) => {
 
 /**
  * Decompresses Zstandard data
- * @param dat The input data
- * @param buf The output buffer. If unspecified, the function will allocate
+ * @param data The input data
+ * @param decompressedSize The decompressed size. If unspecified, the function will allocate
  *            exactly enough memory to fit the decompressed data. If your
  *            data has multiple frames and you know the output size, specifying
  *            it will yield better performance.
  * @returns The decompressed data
  */
-export function decompress(dat: Uint8Array, buf?: Uint8Array) {
+export function decompress(data: buffer, decompressedSize?: number) {
+	let buf = typeIs(decompressedSize, "number") ? new Uint8Array(decompressedSize) : undefined;
+	let dat = new Uint8Array(data);
   const bufs: Uint8Array[] = [], nb = !buf ? 1 : 0 as 0 | 1;
   let bt = 0, ol = 0;
   for (; getn(dat);) {
@@ -948,5 +950,9 @@ export function decompress(dat: Uint8Array, buf?: Uint8Array) {
     } else bt = st;
     dat = dat.subarray(bt);
   }
-  return cct(bufs, ol);
+
+  const u8result = cct(bufs, ol);
+  const result = buffer.create(u8result.byteLength);
+  buffer.copy(result, 0, u8result.buffer, u8result.byteOffset, u8result.byteLength);
+  return result;
 }
