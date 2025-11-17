@@ -6,8 +6,7 @@ local bufferBySize = {
 	[4] = { { buffer.readu32, buffer.writeu32 }, { buffer.readi32, buffer.writei32 } },
 }
 local function getn(t)
-	error("implement getn")
-	return 0
+	return #t
 end
 -- ---- TypedArray base class ----
 local TypedArray
@@ -1302,15 +1301,18 @@ end
 --[[
 	*
 	 * Decompresses Zstandard data
-	 * @param dat The input data
-	 * @param buf The output buffer. If unspecified, the function will allocate
+	 * @param data The input data
+	 * @param decompressedSize The decompressed size. If unspecified, the function will allocate
 	 *            exactly enough memory to fit the decompressed data. If your
 	 *            data has multiple frames and you know the output size, specifying
 	 *            it will yield better performance.
 	 * @returns The decompressed data
 	 
 ]]
-local function decompress(dat, buf)
+local function decompress(data, decompressedSize)
+	local _decompressedSize = decompressedSize
+	local buf = if type(_decompressedSize) == "number" then Uint8Array.new(decompressedSize) else nil
+	local dat = Uint8Array.new(data)
 	local bufs = {}
 	local nb = if not buf then 1 else 0
 	local bt = 0
@@ -1364,7 +1366,10 @@ local function decompress(dat, buf)
 		end
 		dat = dat:subarray(bt)
 	end
-	return cct(bufs, ol)
+	local u8result = cct(bufs, ol)
+	local result = buffer.create(u8result.byteLength)
+	buffer.copy(result, 0, u8result.buffer, u8result.byteOffset, u8result.byteLength)
+	return result
 end
 return {
 	decompress = decompress,
