@@ -6,8 +6,7 @@ local bufferBySize = {
 	[4] = { { buffer.readu32, buffer.writeu32 }, { buffer.readi32, buffer.writei32 } },
 }
 local function getn(t)
-	error("implement getn")
-	return 0
+	return #t
 end
 -- ---- TypedArray base class ----
 local TypedArray
