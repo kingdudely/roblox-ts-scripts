@@ -6,7 +6,8 @@ local bufferBySize = {
 	[4] = { { buffer.readu32, buffer.writeu32 }, { buffer.readi32, buffer.writei32 } },
 }
 local function getn(t)
-	return #t
+	error("implement getn")
+	return 0
 end
 -- ---- TypedArray base class ----
 local TypedArray
@@ -324,39 +325,21 @@ local i32 = Int32Array
 -- Huffman decoding table
 -- FSE decoding table
 -- decompress Zstandard state
---[[
-	*
-	 * Codes for errors generated within this library
-	 
-]]
-local ZstdErrorCode = {
-	InvalidData = 0,
-	WindowSizeTooLarge = 1,
-	InvalidBlockType = 2,
-	FSEAccuracyTooHigh = 3,
-	DistanceTooFarBack = 4,
-	UnexpectedEOF = 5,
-}
--- error codes
-local ec = { "invalid zstd data", "window size too large (>2046MB)", "invalid block type", "FSE accuracy too high", "match distance too far back", "unexpected EOF" }
---[[
-	*
-	 * An error generated within this library
-	 
-]]
---[[
-	
-	const rb = (d: Uint8Array, b: number, n: number) => {
-	  let i = 0, o = 0;
-	  for (; i < n; ++i) o |= d[b++] << (i << 3);
-	  return o;
-	};
-	
-]]
--- const b4 = (d: Uint8Array, b: number) => (d[b] | (d[b + 1] << 8) | (d[b + 2] << 16) | (d[b + 3] << 24)) >>> 0;
+local rb = function(d, b, n)
+	local o = 0
+	for i = 0, n - 1 do
+		local _readable = o
+		local _exp = d
+		local _original = b
+		b += 1
+		o = bit32.bor(_readable, bit32.lshift(_exp[_original], (bit32.lshift(i, 3))))
+	end
+	--   for (; i < n; ++i) o |= d[b++] << (i << 3);
+	return o
+end
 -- read Zstandard frame header
 local rzfh = function(dat, w)
-	local n3 = buffer.readbits(dat.buffer, 0, 24)
+	local n3 = rb(dat, 0, 3)
 	if tonumber(n3) == 0x2FB528 and tonumber(dat[3]) == 253 then
 		-- Zstandard
 		local flg = dat[4]
@@ -367,19 +350,19 @@ local rzfh = function(dat, w)
 		local fcf = bit32.arshift(flg, 6)
 		local _value = bit32.band(flg, 8)
 		if _value ~= 0 and _value == _value and _value then
-			error(ec[0])
+			error("invalid zstd data")
 		end
 		-- byte
 		local bt = 6 - ss
 		-- dict bytes
 		local db = if tonumber(df) == 3 then 4 else df
 		-- dictionary id
-		local di = buffer.readbits(dat.buffer, bt * 8, db * 8)
+		local di = rb(dat, bt, db)
 		bt += db
 		-- frame size bytes
 		local fsb = if fcf ~= 0 and fcf == fcf and fcf then (bit32.lshift(1, fcf)) else ss
 		-- frame source size
-		local fss = buffer.readbits(dat.buffer, bt * 8, fsb * 8) + (if ((tonumber(fcf) == 1) and 256) then 1 else 0)
+		local fss = rb(dat, bt, fsb) + (if ((tonumber(fcf) == 1) and 256) then 1 else 0)
 		-- window size
 		local ws = fss
 		if not (ss ~= 0 and ss == ss and ss) then
@@ -388,7 +371,7 @@ local rzfh = function(dat, w)
 			ws = wb + (bit32.arshift(wb, 3)) * (bit32.band(dat[5], 7))
 		end
 		if ws > 2145386496 then
-			error(ec[1])
+			error("window size too large (>2046MB)")
 		end
 		local _result
 		if tonumber(w) == 1 then
@@ -421,25 +404,15 @@ local rzfh = function(dat, w)
 		}
 	elseif tonumber(bit32.bor((bit32.arshift(n3, 4)), (bit32.lshift(dat[3], 20)))) == 0x184D2A5 then
 		-- skippable
-		return buffer.readu32(dat.buffer, 4) + 8
+		return rb(dat, 4, 4) + 8
 	end
-	error(ec[0])
+	error("invalid zstd data")
 end
 -- most significant bit for nonzero
 local msb = function(val)
 	local bits = 0
-	do
-		local _shouldIncrement = false
-		while true do
-			if _shouldIncrement then
-				bits += 1
-			else
-				_shouldIncrement = true
-			end
-			if not ((bit32.lshift(1, bits)) <= val) then
-				break
-			end
-		end
+	while (bit32.lshift(1, bits)) <= val do
+		bits += 1
 	end
 	return bits - 1
 end
@@ -450,7 +423,7 @@ local rfse = function(dat, bt, mal)
 	-- accuracy log
 	local al = (bit32.band(dat[bt], 15)) + 5
 	if al > mal then
-		error(ec[3])
+		error("FSE accuracy too high")
 	end
 	-- size
 	local sz = bit32.lshift(1, al)
@@ -474,7 +447,7 @@ local rfse = function(dat, bt, mal)
 		local cbt = bit32.arshift(tpos, 3)
 		-- mask
 		local msk = (bit32.lshift(1, (bits + 1))) - 1
-		local val = bit32.band((bit32.arshift((bit32.bor(bit32.bor(dat[cbt], (bit32.lshift(dat[cbt + 1], 8))), (bit32.lshift(dat[cbt + 2], 16)))), (bit32.band(tpos, 7)))), msk)
+		local val = bit32.band((bit32.arshift(rb(dat, cbt, 3), (bit32.band(tpos, 7)))), msk)
 		-- mask (1 fewer bit)
 		local msk1fb = (bit32.lshift(1, bits)) - 1
 		-- max small value
@@ -507,7 +480,7 @@ local rfse = function(dat, bt, mal)
 				do
 					-- repeat byte
 					local rbt = bit32.arshift(tpos, 3)
-					re = bit32.band((bit32.arshift((bit32.bor(dat[rbt], (bit32.lshift(dat[rbt + 1], 8)))), (bit32.band(tpos, 7)))), 3)
+					re = bit32.band((bit32.arshift(rb(dat, rbt, 2), (bit32.band(tpos, 7)))), 3)
 					tpos += 2
 					sym += re
 				end
@@ -516,79 +489,45 @@ local rfse = function(dat, bt, mal)
 	end
 	local _value = sym > 255 or probs
 	if _value ~= 0 and _value == _value and _value then
-		error(ec[0])
+		error("invalid zstd data")
 	end
 	local sympos = 0
 	-- sym step (coprime with sz - formula from zstd source)
 	local sstep = (bit32.arshift(sz, 1)) + (bit32.arshift(sz, 3)) + 3
 	-- sym mask
 	local smask = sz - 1
-	do
-		local s = 0
-		local _shouldIncrement = false
-		while true do
-			if _shouldIncrement then
-				s += 1
-			else
-				_shouldIncrement = true
-			end
-			if not (s <= sym) then
-				break
-			end
-			local sf = freq[s]
-			if sf < 1 then
-				dstate[s] = -sf
-				continue
-			end
-			-- This is split into two loops in zstd to avoid branching, but as JS is higher-level that is unnecessary
-			do
-				i = 0
-				local _shouldIncrement_1 = false
-				while true do
-					if _shouldIncrement_1 then
-						i += 1
-					else
-						_shouldIncrement_1 = true
-					end
-					if not (i < sf) then
-						break
-					end
-					syms[sympos] = s
-					repeat
-						do
-							sympos = bit32.band((sympos + sstep), smask)
-						end
-					until not (sympos >= ht)
+	for s = 0, sym do
+		local sf = freq[s]
+		if sf < 1 then
+			dstate[s] = -sf
+			continue
+		end
+		-- This is split into two loops in zstd to avoid branching, but as JS is higher-level that is unnecessary
+		for n = 0, sf - 1 do
+			i = n
+			syms[sympos] = s
+			repeat
+				do
+					sympos = bit32.band((sympos + sstep), smask)
 				end
-			end
+			until not (sympos >= ht)
 		end
 	end
 	-- After spreading symbols, should be zero again
 	if sympos ~= 0 and sympos == sympos and sympos then
-		error(ec[0])
+		error("invalid zstd data")
 	end
-	do
-		i = 0
-		local _shouldIncrement = false
-		while true do
-			if _shouldIncrement then
-				i += 1
-			else
-				_shouldIncrement = true
-			end
-			if not (i < sz) then
-				break
-			end
-			-- next state
-			local _index = syms[i]
-			local _original = dstate[_index]
-			dstate[_index] += 1
-			local ns = _original
-			-- num bits
-			nbits[i] = al - msb(ns)
-			local nb = nbits[i]
-			nstate[i] = (bit32.lshift(ns, nb)) - sz
-		end
+	for n = 0, sz - 1 do
+		i = n
+		-- next state
+		local _index = syms[i]
+		local _original = dstate[_index]
+		dstate[_index] += 1
+		local ns = _original
+		-- num bits
+		nbits[i] = al - msb(ns)
+		local nb = nbits[i]
+		nstate[i] = (bit32.lshift(ns, nb)) - sz
 	end
 	return { bit32.arshift((tpos + 7), 3), {
 		b = al,
@@ -622,7 +561,7 @@ local rhu = function(dat, bt)
 		-- last byte
 		local lb = dat[bt]
 		if not (lb ~= 0 and lb == lb and lb) then
-			error(ec[0])
+			error("invalid zstd data")
 		end
 		--  state1   state2   state1 bits   state2 bits
 		local st1 = 0
@@ -639,7 +578,7 @@ local rhu = function(dat, bt)
 				break
 			end
 			local cbt = bit32.arshift(fpos, 3)
-			st1 += bit32.band((bit32.arshift((bit32.bor(dat[cbt], (bit32.lshift(dat[cbt + 1], 8)))), (bit32.band(fpos, 7)))), ((bit32.lshift(1, btr1)) - 1))
+			st1 += bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(fpos, 7)))), ((bit32.lshift(1, btr1)) - 1))
 			wc += 1
 			hw[wc] = fdt.s[st1]
 			fpos -= btr2
@@ -647,7 +586,7 @@ local rhu = function(dat, bt)
 				break
 			end
 			cbt = bit32.arshift(fpos, 3)
-			st2 += bit32.band((bit32.arshift((bit32.bor(dat[cbt], (bit32.lshift(dat[cbt + 1], 8)))), (bit32.band(fpos, 7)))), ((bit32.lshift(1, btr2)) - 1))
+			st2 += bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(fpos, 7)))), ((bit32.lshift(1, btr2)) - 1))
 			wc += 1
 			hw[wc] = fdt.s[st2]
 			btr1 = fdt.n[st1]
@@ -657,55 +596,34 @@ local rhu = function(dat, bt)
 		end
 		wc += 1
 		if wc > 255 then
-			error(ec[0])
+			error("invalid zstd data")
 		end
 	else
 		wc = hb - 127
-		do
-			local _shouldIncrement = false
-			while true do
-				if _shouldIncrement then
-					i += 2
-				else
-					_shouldIncrement = true
-				end
-				if not (i < wc) then
-					break
-				end
-				local _exp = dat
-				bt += 1
-				local byte = _exp[bt]
-				hw[i] = bit32.arshift(byte, 4)
-				hw[i + 1] = bit32.band(byte, 15)
-			end
+		while i < wc do
+			local _exp = dat
+			bt += 1
+			local byte = _exp[bt]
+			hw[i] = bit32.arshift(byte, 4)
+			hw[i + 1] = bit32.band(byte, 15)
+			i += 2
 		end
 		bt += 1
 	end
 	-- weight exponential sum
 	local wes = 0
-	do
-		i = 0
-		local _shouldIncrement = false
-		while true do
-			if _shouldIncrement then
-				i += 1
-			else
-				_shouldIncrement = true
-			end
-			if not (i < wc) then
-				break
-			end
-			local wt = hw[i]
-			-- bits must be at most 11, same as weight
-			if wt > 11 then
-				error(ec[0])
-			end
-			local _condition = wt
-			if _condition ~= 0 and _condition == _condition and _condition then
-				_condition = (bit32.lshift(1, (wt - 1)))
-			end
-			wes += _condition
+	for n = 0, wc - 1 do
+		i = n
+		local wt = hw[i]
+		-- bits must be at most 11, same as weight
+		if wt > 11 then
+			error("invalid zstd data")
 		end
+		local _condition = wt
+		if _condition ~= 0 and _condition == _condition and _condition then
+			_condition = (bit32.lshift(1, (wt - 1)))
+		end
+		wes += _condition
 	end
 	-- max bits
 	local mb = msb(wes) + 1
@@ -716,31 +634,20 @@ local rhu = function(dat, bt)
 	-- must be power of 2
 	local _value = bit32.band(rem, (rem - 1))
 	if _value ~= 0 and _value == _value and _value then
-		error(ec[0])
+		error("invalid zstd data")
 	end
 	local _original = wc
 	wc += 1
 	hw[_original] = msb(rem) + 1
-	do
-		i = 0
-		local _shouldIncrement = false
-		while true do
-			if _shouldIncrement then
-				i += 1
-			else
-				_shouldIncrement = true
-			end
-			if not (i < wc) then
-				break
-			end
-			local wt = hw[i]
-			local _condition = wt
-			if _condition ~= 0 and _condition == _condition and _condition then
-				_condition = (mb + 1 - wt)
-			end
-			hw[i] = _condition
-			rc[hw[i]] += 1
+	for n = 0, wc - 1 do
+		i = n
+		local wt = hw[i]
+		local _condition = wt
+		if _condition ~= 0 and _condition == _condition and _condition then
+			_condition = (mb + 1 - wt)
 		end
+		hw[i] = _condition
+		rc[hw[i]] += 1
 	end
 	-- huf buf
 	local hbuf = u8.new(bit32.lshift(ts, 1))
@@ -748,49 +655,38 @@ local rhu = function(dat, bt)
 	local syms = hbuf:subarray(0, ts)
 	local nb = hbuf:subarray(ts)
 	ri[mb] = 0
-	do
-		i = mb
-		local _shouldIncrement = false
-		while true do
-			if _shouldIncrement then
-				i -= 1
-			else
-				_shouldIncrement = true
-			end
-			if not (i > 0) then
-				break
-			end
-			local pv = ri[i]
-			local _exp = i
-			local _index = i - 1
-			ri[_index] = pv + rc[i] * (bit32.lshift(1, (mb - i)))
-			nb:fill(_exp, pv, ri[_index])
-		end
+	for n = mb, 1, -1 or 1 do
+		i = n
+		local pv = ri[i]
+		local _exp = i
+		local _index = i - 1
+		ri[_index] = pv + rc[i] * (bit32.lshift(1, (mb - i)))
+		nb:fill(_exp, pv, ri[_index])
 	end
 	if tonumber(ri[0]) ~= tonumber(ts) then
-		error(ec[0])
+		error("invalid zstd data")
 	end
-	do
-		i = 0
-		local _shouldIncrement = false
-		while true do
-			if _shouldIncrement then
-				i += 1
-			else
-				_shouldIncrement = true
-			end
-			if not (i < wc) then
-				break
-			end
-			local bits = hw[i]
-			if bits ~= 0 and bits == bits and bits then
-				local code = ri[bits]
-				local _exp = i
-				ri[bits] = code + (bit32.lshift(1, (mb - bits)))
-				syms:fill(_exp, code, ri[bits])
-			end
+	for n = 0, wc - 1 do
+		i = n
+		local bits = hw[i]
+		if bits ~= 0 and bits == bits and bits then
+			local code = ri[bits]
+			local _exp = i
+			ri[bits] = code + (bit32.lshift(1, (mb - bits)))
+			syms:fill(_exp, code, ri[bits])
 		end
 	end
+	--[[
+		
+			for (i = 0; i < wc; ++i) {
+			  const bits = hw[i];
+			  if (bits) {
+			    const code = ri[bits];
+			    syms.fill(i, code, ri[bits] = code + (1 << (mb - bits)));
+			  }
+			}
+			
+	]]
 	return { bt, {
 		n = nb,
 		b = mb,
@@ -809,21 +705,9 @@ local doct = rfse(u8.new({ 32, 132, 16, 66, 102, 70, 68, 68, 68, 68, 36, 73, 2 }
 local b2bl = function(b, s)
 	local len = getn(b)
 	local bl = i32.new(len)
-	do
-		local i = 0
-		local _shouldIncrement = false
-		while true do
-			if _shouldIncrement then
-				i += 1
-			else
-				_shouldIncrement = true
-			end
-			if not (i < len) then
-				break
-			end
-			bl[i] = s
-			s += bit32.lshift(1, b[i])
-		end
+	for i = 0, len - 1 do
+		bl[i] = s
+		s += bit32.lshift(1, b[i])
 	end
 	return bl
 end
@@ -843,7 +727,7 @@ local dhu = function(dat, out, hu)
 	local msk = (bit32.lshift(1, hu.b)) - 1
 	local eb = -hu.b
 	if not (lb ~= 0 and lb == lb and lb) then
-		error(ec[0])
+		error("invalid zstd data")
 	end
 	local st = 0
 	local btr = hu.b
@@ -851,7 +735,7 @@ local dhu = function(dat, out, hu)
 	local i = -1
 	while pos > eb and i < ss do
 		local cbt = bit32.arshift(pos, 3)
-		local val = bit32.arshift((bit32.bor(bit32.bor(dat[cbt], (bit32.lshift(dat[cbt + 1], 8))), (bit32.lshift(dat[cbt + 2], 16)))), (bit32.band(pos, 7)))
+		local val = (bit32.arshift(rb(dat, cbt, 3), (bit32.band(pos, 7))))
 		st = bit32.band((bit32.bor((bit32.lshift(st, btr)), val)), msk)
 		local _exp = out
 		i += 1
@@ -860,7 +744,7 @@ local dhu = function(dat, out, hu)
 		pos -= btr
 	end
 	if tonumber(pos) ~= tonumber(eb) or tonumber(i + 1) ~= tonumber(ss) then
-		error(ec[0])
+		error("invalid zstd data")
 	end
 end
 -- decode huffman stream 4x
@@ -873,15 +757,15 @@ local dhu4 = function(dat, out, hu)
 	local sz3 = sz1 + sz2
 	local _dat = dat
 	local _exp = bt
-	bt += bit32.bor(dat[0], (bit32.lshift(dat[1], 8)))
+	bt += rb(dat, 0, 2)
 	dhu(_dat:subarray(_exp, bt), out:subarray(0, sz1), hu)
 	local _dat_1 = dat
 	local _exp_1 = bt
-	bt += bit32.bor(dat[2], (bit32.lshift(dat[3], 8)))
+	bt += rb(dat, 2, 2)
 	dhu(_dat_1:subarray(_exp_1, bt), out:subarray(sz1, sz2), hu)
 	local _dat_2 = dat
 	local _exp_2 = bt
-	bt += bit32.bor(dat[4], (bit32.lshift(dat[5], 8)))
+	bt += rb(dat, 4, 2)
 	dhu(_dat_2:subarray(_exp_2, bt), out:subarray(sz2, sz3), hu)
 	dhu(dat:subarray(bt), out:subarray(sz3), hu)
 end
@@ -1024,7 +908,7 @@ local rzb = function(dat, st, out)
 				hu = hud[2]
 				st.h = hu
 			elseif not hu then
-				error(ec[0])
+				error("invalid zstd data")
 			end
 			local _fn = if s4 ~= 0 and s4 == s4 and s4 then dhu4 else dhu
 			local _dat = dat
@@ -1061,10 +945,10 @@ local rzb = function(dat, st, out)
 			local scm = _exp_1[_original_1]
 			local _value = bit32.band(scm, 3)
 			if _value ~= 0 and _value == _value and _value then
-				error(ec[0])
+				error("invalid zstd data")
 			end
 			local dts = { dmlt, doct, dllt }
-			for i = 2, 0, -1 do
+			for i = 2, 0, -1 or 1 do
 				local md = bit32.band((bit32.arshift(scm, ((bit32.lshift(i, 1)) + 2))), 3)
 				if tonumber(md) == 1 then
 					-- rle buf
@@ -1085,7 +969,7 @@ local rzb = function(dat, st, out)
 					dts[i + 1] = _binding[2]
 				elseif tonumber(md) == 3 then
 					if not st.t then
-						error(ec[0])
+						error("invalid zstd data")
 					end
 					dts[i + 1] = st.t[i + 1]
 				end
@@ -1097,133 +981,95 @@ local rzb = function(dat, st, out)
 			local llt = _binding[3]
 			local lb = dat[ebt - 1]
 			if not (lb ~= 0 and lb == lb and lb) then
-				error(ec[0])
+				error("invalid zstd data")
 			end
 			local spos = (bit32.lshift(ebt, 3)) - 8 + msb(lb) - llt.b
 			local cbt = bit32.arshift(spos, 3)
 			local oubt = 0
-			local lst = bit32.band((bit32.arshift((bit32.bor(dat[cbt], (bit32.lshift(dat[cbt + 1], 8)))), (bit32.band(spos, 7)))), ((bit32.lshift(1, llt.b)) - 1))
+			local lst = bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(spos, 7)))), ((bit32.lshift(1, llt.b)) - 1))
 			spos -= oct.b
 			cbt = bit32.arshift(spos, 3)
-			local ost = bit32.band((bit32.arshift((bit32.bor(dat[cbt], (bit32.lshift(dat[cbt + 1], 8)))), (bit32.band(spos, 7)))), ((bit32.lshift(1, oct.b)) - 1))
+			local ost = bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(spos, 7)))), ((bit32.lshift(1, oct.b)) - 1))
 			spos -= mlt.b
 			cbt = bit32.arshift(spos, 3)
-			local mst = bit32.band((bit32.arshift((bit32.bor(dat[cbt], (bit32.lshift(dat[cbt + 1], 8)))), (bit32.band(spos, 7)))), ((bit32.lshift(1, mlt.b)) - 1))
-			do
-				ns += 1
-				while true do
-					ns -= 1
-					if not (ns ~= 0 and ns == ns and ns) then
-						break
-					end
-					local llc = llt.s[lst]
-					local lbtr = llt.n[lst]
-					local mlc = mlt.s[mst]
-					local mbtr = mlt.n[mst]
-					local ofc = oct.s[ost]
-					local obtr = oct.n[ost]
-					spos -= ofc
-					cbt = bit32.arshift(spos, 3)
-					local ofp = bit32.lshift(1, ofc)
-					local off = ofp + (bit32.band((bit32.rshift((bit32.bor(bit32.bor(bit32.bor(dat[cbt], (bit32.lshift(dat[cbt + 1], 8))), (bit32.lshift(dat[cbt + 2], 16))), (bit32.lshift(dat[cbt + 3], 24)))), (bit32.band(spos, 7)))), (ofp - 1)))
-					spos -= mlb[mlc]
-					cbt = bit32.arshift(spos, 3)
-					local ml = mlbl[mlc] + (bit32.band((bit32.arshift((bit32.bor(bit32.bor(dat[cbt], (bit32.lshift(dat[cbt + 1], 8))), (bit32.lshift(dat[cbt + 2], 16)))), (bit32.band(spos, 7)))), ((bit32.lshift(1, mlb[mlc])) - 1)))
-					spos -= llb[llc]
-					cbt = bit32.arshift(spos, 3)
-					local ll = llbl[llc] + (bit32.band((bit32.arshift((bit32.bor(bit32.bor(dat[cbt], (bit32.lshift(dat[cbt + 1], 8))), (bit32.lshift(dat[cbt + 2], 16)))), (bit32.band(spos, 7)))), ((bit32.lshift(1, llb[llc])) - 1)))
-					spos -= lbtr
-					cbt = bit32.arshift(spos, 3)
-					lst = llt.t[lst] + (bit32.band((bit32.arshift((bit32.bor(dat[cbt], (bit32.lshift(dat[cbt + 1], 8)))), (bit32.band(spos, 7)))), ((bit32.lshift(1, lbtr)) - 1)))
-					spos -= mbtr
-					cbt = bit32.arshift(spos, 3)
-					mst = mlt.t[mst] + (bit32.band((bit32.arshift((bit32.bor(dat[cbt], (bit32.lshift(dat[cbt + 1], 8)))), (bit32.band(spos, 7)))), ((bit32.lshift(1, mbtr)) - 1)))
-					spos -= obtr
-					cbt = bit32.arshift(spos, 3)
-					ost = oct.t[ost] + (bit32.band((bit32.arshift((bit32.bor(dat[cbt], (bit32.lshift(dat[cbt + 1], 8)))), (bit32.band(spos, 7)))), ((bit32.lshift(1, obtr)) - 1)))
-					if off > 3 then
-						st.o[2] = st.o[1]
+			local mst = bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(spos, 7)))), ((bit32.lshift(1, mlt.b)) - 1))
+			ns += 1
+			while true do
+				ns -= 1
+				if not (ns ~= 0 and ns == ns and ns) then
+					break
+				end
+				local llc = llt.s[lst]
+				local lbtr = llt.n[lst]
+				local mlc = mlt.s[mst]
+				local mbtr = mlt.n[mst]
+				local ofc = oct.s[ost]
+				local obtr = oct.n[ost]
+				spos -= ofc
+				cbt = bit32.arshift(spos, 3)
+				local ofp = bit32.lshift(1, ofc)
+				local off = ofp + (bit32.band((bit32.rshift(rb(dat, cbt, 4), (bit32.band(spos, 7)))), (ofp - 1)))
+				spos -= mlb[mlc]
+				cbt = bit32.arshift(spos, 3)
+				local ml = mlbl[mlc] + (bit32.band((bit32.arshift(rb(dat, cbt, 3), (bit32.band(spos, 7)))), ((bit32.lshift(1, mlb[mlc])) - 1)))
+				spos -= llb[llc]
+				cbt = bit32.arshift(spos, 3)
+				local ll = llbl[llc] + (bit32.band((bit32.arshift(rb(dat, cbt, 3), (bit32.band(spos, 7)))), ((bit32.lshift(1, llb[llc])) - 1)))
+				spos -= lbtr
+				cbt = bit32.arshift(spos, 3)
+				lst = llt.t[lst] + (bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(spos, 7)))), ((bit32.lshift(1, lbtr)) - 1)))
+				spos -= mbtr
+				cbt = bit32.arshift(spos, 3)
+				mst = mlt.t[mst] + (bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(spos, 7)))), ((bit32.lshift(1, mbtr)) - 1)))
+				spos -= obtr
+				cbt = bit32.arshift(spos, 3)
+				ost = oct.t[ost] + (bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(spos, 7)))), ((bit32.lshift(1, obtr)) - 1)))
+				if off > 3 then
+					st.o[2] = st.o[1]
+					st.o[1] = st.o[0]
+					off -= 3
+					st.o[0] = off
+				else
+					local idx = off - (tonumber(ll) ~= 0)
+					if idx ~= 0 and idx == idx and idx then
+						off = if tonumber(idx) == 3 then st.o[0] - 1 else st.o[idx]
+						if idx > 1 then
+							st.o[2] = st.o[1]
+						end
 						st.o[1] = st.o[0]
-						off -= 3
 						st.o[0] = off
 					else
-						local idx = off - (tonumber(ll) ~= 0)
-						if idx ~= 0 and idx == idx and idx then
-							off = if tonumber(idx) == 3 then st.o[0] - 1 else st.o[idx]
-							if idx > 1 then
-								st.o[2] = st.o[1]
-							end
-							st.o[1] = st.o[0]
-							st.o[0] = off
-						else
-							off = st.o[0]
-						end
+						off = st.o[0]
 					end
-					do
-						local i = 0
-						local _shouldIncrement = false
-						while true do
-							if _shouldIncrement then
-								i += 1
-							else
-								_shouldIncrement = true
-							end
-							if not (i < ll) then
-								break
-							end
-							buf[oubt + i] = buf[spl + i]
-						end
-					end
-					oubt += ll
-					local _exp_2 = oubt
-					spl += ll
-					local _ = spl
-					local stin = oubt - off
-					if stin < 0 then
-						local len = -stin
-						local bs = st.e + stin
-						if len > ml then
-							len = ml
-						end
-						do
-							local i = 0
-							local _shouldIncrement = false
-							while true do
-								if _shouldIncrement then
-									i += 1
-								else
-									_shouldIncrement = true
-								end
-								if not (i < len) then
-									break
-								end
-								buf[oubt + i] = st.w[bs + i]
-							end
-						end
-						oubt += len
-						local _exp_3 = oubt
-						ml -= len
-						local _exp_4 = ml
-						stin = 0
-						local _1 = stin
-					end
-					do
-						local i = 0
-						local _shouldIncrement = false
-						while true do
-							if _shouldIncrement then
-								i += 1
-							else
-								_shouldIncrement = true
-							end
-							if not (i < ml) then
-								break
-							end
-							buf[oubt + i] = buf[stin + i]
-						end
-					end
-					oubt += ml
 				end
+				for i = 0, ll - 1 do
+					buf[oubt + i] = buf[spl + i]
+				end
+				oubt += ll
+				local _exp_2 = oubt
+				spl += ll
+				local _ = spl
+				local stin = oubt - off
+				if stin < 0 then
+					local len = -stin
+					local bs = st.e + stin
+					if len > ml then
+						len = ml
+					end
+					for i = 0, len - 1 do
+						buf[oubt + i] = st.w[bs + i]
+					end
+					oubt += len
+					local _exp_3 = oubt
+					ml -= len
+					local _exp_4 = ml
+					stin = 0
+					local _1 = stin
+				end
+				for i = 0, ml - 1 do
+					buf[oubt + i] = buf[stin + i]
+				end
+				oubt += ml
 			end
 			if tonumber(oubt) ~= tonumber(spl) then
 				while spl < getn(buf) do
@@ -1246,20 +1092,8 @@ local rzb = function(dat, st, out)
 		elseif out then
 			st.y += lss
 			if spl ~= 0 and spl == spl and spl then
-				do
-					local i = 0
-					local _shouldIncrement = false
-					while true do
-						if _shouldIncrement then
-							i += 1
-						else
-							_shouldIncrement = true
-						end
-						if not (i < lss) then
-							break
-						end
-						buf[i] = buf[spl + i]
-					end
+				for i = 0, lss - 1 do
+					buf[i] = buf[spl + i]
 				end
 			end
 		elseif spl ~= 0 and spl == spl and spl then
@@ -1268,7 +1102,7 @@ local rzb = function(dat, st, out)
 		st.b = ebt
 		return buf
 	end
-	error(ec[2])
+	error("invalid block type")
 end
 -- concat
 local cct = function(bufs, ol)
@@ -1276,25 +1110,11 @@ local cct = function(bufs, ol)
 		return bufs[1]
 	end
 	local buf = u8.new(ol)
-	do
-		local i = 0
-		local _b = 0
-		local _shouldIncrement = false
-		while true do
-			local b = _b
-			if _shouldIncrement then
-				i += 1
-			else
-				_shouldIncrement = true
-			end
-			if not (i < getn(bufs)) then
-				break
-			end
-			local chk = bufs[i + 1]
-			buf:set(chk, b)
-			b += getn(chk)
-			_b = b
-		end
+	local b = 0
+	for i = 0, getn(bufs) - 1 do
+		local chk = bufs[i + 1]
+		buf:set(chk, b)
+		b += getn(chk)
 	end
 	return buf
 end
@@ -1349,7 +1169,7 @@ local function decompress(data, decompressedSize)
 				end
 				local blk = rzb(dat, st, buf)
 				if not blk then
-					error(ec[5])
+					error("unexpected EOF")
 				end
 				if buf then
 					st.e = st.y
@@ -1373,5 +1193,4 @@ local function decompress(data, decompressedSize)
 end
 return {
 	decompress = decompress,
-	ZstdErrorCode = ZstdErrorCode,
 }
