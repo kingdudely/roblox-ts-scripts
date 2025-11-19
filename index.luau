@@ -324,6 +324,9 @@ local i32 = Int32Array
 -- Huffman decoding table
 -- FSE decoding table
 -- decompress Zstandard state
+local function toSigned(x)
+	return if x >= 0x80000000 then x - 0x100000000 else x
+end
 local rb = function(d, b, n)
 	local o = 0
 	for i = 0, n - 1 do
@@ -343,10 +346,10 @@ local rzfh = function(dat, w)
 		-- Zstandard
 		local flg = dat[4]
 		--    single segment       checksum             dict flag     frame content flag
-		local ss = bit32.band((bit32.arshift(flg, 5)), 1)
-		local cc = bit32.band((bit32.arshift(flg, 2)), 1)
-		local df = bit32.band(flg, 3)
-		local fcf = bit32.arshift(flg, 6)
+		local ss = toSigned(bit32.band(toSigned(bit32.arshift(flg, 5)), 1))
+		local cc = toSigned(bit32.band(toSigned(bit32.arshift(flg, 2)), 1))
+		local df = toSigned(bit32.band(flg, 3))
+		local fcf = toSigned(bit32.arshift(flg, 6))
 		local _value = bit32.band(flg, 8)
 		if _value ~= 0 and _value == _value and _value then
 			error("invalid zstd data")
@@ -359,15 +362,15 @@ local rzfh = function(dat, w)
 		local di = rb(dat, bt, db)
 		bt += db
 		-- frame size bytes
-		local fsb = if fcf ~= 0 and fcf == fcf and fcf then (bit32.lshift(1, fcf)) else ss
+		local fsb = if fcf ~= 0 and fcf == fcf and fcf then toSigned(bit32.lshift(1, fcf)) else ss
 		-- frame source size
 		local fss = rb(dat, bt, fsb) + (if (tonumber(fcf) == 1) then 256 else 0)
 		-- window size
 		local ws = fss
 		if not (ss ~= 0 and ss == ss and ss) then
 			-- window descriptor
-			local wb = bit32.lshift(1, (10 + (bit32.arshift(dat[5], 3))))
-			ws = wb + (bit32.arshift(wb, 3)) * (bit32.band(dat[5], 7))
+			local wb = toSigned(bit32.lshift(1, (10 + toSigned(bit32.arshift(dat[5], 3)))))
+			ws = toSigned(toSigned(wb) + toSigned((bit32.arshift(wb, 3)) * toSigned(bit32.band(dat[5], 7))))
 		end
 		if ws > 2145386496 then
 			error("window size too large (>2046MB)")
@@ -401,7 +404,7 @@ local rzfh = function(dat, w)
 			c = cc,
 			m = math.min(131072, ws),
 		}
-	elseif tonumber(bit32.bor((bit32.arshift(n3, 4)), (bit32.lshift(dat[3], 20)))) == 0x184D2A5 then
+	elseif tonumber((bit32.bor(toSigned(bit32.arshift(n3, 4)), toSigned(bit32.lshift(dat[3], 20))))) == 0x184D2A5 then
 		-- skippable
 		return rb(dat, 4, 4) + 8
 	end
@@ -410,7 +413,7 @@ end
 -- most significant bit for nonzero
 local msb = function(val)
 	local bits = 0
-	while (bit32.lshift(1, bits)) <= val do
+	while (toSigned(bit32.lshift(1, bits))) <= val do
 		bits += 1
 	end
 	return bits - 1
@@ -418,14 +421,14 @@ end
 -- read finite state entropy
 local rfse = function(dat, bt, mal)
 	-- table pos
-	local tpos = (bit32.lshift(bt, 3)) + 4
+	local tpos = toSigned(bit32.lshift(bt, 3)) + 4
 	-- accuracy log
-	local al = (bit32.band(dat[bt], 15)) + 5
+	local al = toSigned((bit32.band(dat[bt], 15))) + 5
 	if al > mal then
 		error("FSE accuracy too high")
 	end
 	-- size
-	local sz = bit32.lshift(1, al)
+	local sz = toSigned(bit32.lshift(1, al))
 	-- probabilities symbols  repeat   index   high threshold
 	local probs = sz
 	local sym = -1
@@ -433,35 +436,35 @@ local rfse = function(dat, bt, mal)
 	local i = -1
 	local ht = sz
 	-- optimization: single allocation is much faster
-	local buf = buffer.create(512 + (bit32.lshift(sz, 2)))
+	local buf = buffer.create(512 + (bit32.lshift(toSigned(sz), 2)))
 	local freq = i16.new(buf, 0, 256)
 	-- same view as freq
 	local dstate = u16.new(buf, 0, 256)
 	local nstate = u16.new(buf, 512, sz)
-	local bb1 = 512 + (bit32.lshift(sz, 1))
+	local bb1 = 512 + (bit32.lshift(toSigned(sz), 1))
 	local syms = u8.new(buf, bb1, sz)
 	local nbits = u8.new(buf, bb1 + sz)
 	while sym < 255 and probs > 0 do
-		local bits = msb(probs + 1)
-		local cbt = bit32.arshift(tpos, 3)
+		local bits = msb(toSigned(probs + 1))
+		local cbt = bit32.arshift(toSigned(tpos), 3)
 		-- mask
-		local msk = (bit32.lshift(1, (bits + 1))) - 1
-		local val = bit32.band((bit32.arshift(rb(dat, cbt, 3), (bit32.band(tpos, 7)))), msk)
+		local msk = toSigned((bit32.lshift(1, (toSigned(bits + 1)))) - 1)
+		local val = toSigned(bit32.band(toSigned(bit32.arshift(rb(dat, cbt, 3), toSigned(bit32.band(tpos, 7)))), msk))
 		-- mask (1 fewer bit)
-		local msk1fb = (bit32.lshift(1, bits)) - 1
+		local msk1fb = toSigned((bit32.lshift(1, bits)) - 1)
 		-- max small value
-		local msv = msk - probs - 1
+		local msv = toSigned(toSigned(msk) - toSigned(probs) - 1)
 		-- small value
-		local sval = bit32.band(val, msk1fb)
+		local sval = toSigned(bit32.band(val, msk1fb))
 		if sval < msv then
 			tpos += bits
 			local _exp = tpos
 			val = sval
 			local _ = val
 		else
-			tpos += bits + 1
-			if val > msk1fb then
-				val -= msv
+			tpos += toSigned(bits + 1)
+			if toSigned(val) > toSigned(msk1fb) then
+				val = toSigned(val) - toSigned(msv)
 			end
 		end
 		sym += 1
@@ -478,8 +481,8 @@ local rfse = function(dat, bt, mal)
 			repeat
 				do
 					-- repeat byte
-					local rbt = bit32.arshift(tpos, 3)
-					re = bit32.band((bit32.arshift(rb(dat, rbt, 2), (bit32.band(tpos, 7)))), 3)
+					local rbt = bit32.arshift(toSigned(tpos), 3)
+					re = toSigned(bit32.band(toSigned(bit32.arshift(rb(dat, rbt, 2), toSigned(bit32.band(tpos, 7)))), 3))
 					tpos += 2
 					sym += re
 				end
@@ -492,9 +495,9 @@ local rfse = function(dat, bt, mal)
 	end
 	local sympos = 0
 	-- sym step (coprime with sz - formula from zstd source)
-	local sstep = (bit32.arshift(sz, 1)) + (bit32.arshift(sz, 3)) + 3
+	local sstep = toSigned((bit32.arshift(sz, 1)) + (bit32.arshift(sz, 3)) + 3)
 	-- sym mask
-	local smask = sz - 1
+	local smask = toSigned(sz - 1)
 	for s = 0, sym do
 		local sf = freq[s]
 		if sf < 1 then
@@ -507,7 +510,7 @@ local rfse = function(dat, bt, mal)
 			syms[sympos] = s
 			repeat
 				do
-					sympos = bit32.band((sympos + sstep), smask)
+					sympos = bit32.band(toSigned(toSigned(sympos) + toSigned(sstep)), smask)
 				end
 			until not (sympos >= ht)
 		end
@@ -524,11 +527,11 @@ local rfse = function(dat, bt, mal)
 		dstate[_index] += 1
 		local ns = _original
 		-- num bits
-		nbits[i] = al - msb(ns)
+		nbits[i] = toSigned(al - msb(ns))
 		local nb = nbits[i]
-		nstate[i] = (bit32.lshift(ns, nb)) - sz
+		nstate[i] = toSigned((bit32.lshift(ns, nb)) - sz)
 	end
-	return { bit32.arshift((tpos + 7), 3), {
+	return { (bit32.arshift(toSigned(tpos + 7), 3)), {
 		b = al,
 		s = syms,
 		n = nbits,
@@ -550,13 +553,13 @@ local rhu = function(dat, bt)
 	-- rank index
 	local ri = u16.new(buf.buffer, 268)
 	-- NOTE: at this point bt is 1 less than expected
-	if hb < 128 then
+	if toSigned(hb) < 128 then
 		-- end byte, fse decode table
-		local _binding = rfse(dat, bt + 1, 6)
+		local _binding = rfse(dat, toSigned(bt + 1), 6)
 		local ebt = _binding[1]
 		local fdt = _binding[2]
 		bt += hb
-		local epos = bit32.lshift(ebt, 3)
+		local epos = toSigned(bit32.lshift(ebt, 3))
 		-- last byte
 		local lb = dat[bt]
 		if not (lb ~= 0 and lb == lb and lb) then
@@ -570,22 +573,22 @@ local rhu = function(dat, bt)
 		-- fse pos
 		-- pre-increment to account for original deficit of 1
 		bt += 1
-		local fpos = (bit32.lshift(bt, 3)) - 8 + msb(lb)
+		local fpos = (toSigned(bit32.lshift(bt, 3)) - 8 + msb(lb))
 		while true do
 			fpos -= btr1
 			if fpos < epos then
 				break
 			end
-			local cbt = bit32.arshift(fpos, 3)
-			st1 += bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(fpos, 7)))), ((bit32.lshift(1, btr1)) - 1))
+			local cbt = bit32.arshift(toSigned(fpos), 3)
+			st1 += toSigned(bit32.band(toSigned(bit32.arshift(rb(dat, cbt, 2), toSigned(bit32.band(fpos, 7)))), (toSigned(bit32.lshift(1, btr1)) - 1)))
 			wc += 1
 			hw[wc] = fdt.s[st1]
 			fpos -= btr2
 			if fpos < epos then
 				break
 			end
-			cbt = bit32.arshift(fpos, 3)
-			st2 += bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(fpos, 7)))), ((bit32.lshift(1, btr2)) - 1))
+			cbt = bit32.arshift(toSigned(fpos), 3)
+			st2 += toSigned(bit32.band(toSigned(bit32.arshift(rb(dat, cbt, 2), toSigned(bit32.band(fpos, 7)))), (toSigned(bit32.lshift(1, btr2)) - 1)))
 			wc += 1
 			hw[wc] = fdt.s[st2]
 			btr1 = fdt.n[st1]
@@ -594,17 +597,17 @@ local rhu = function(dat, bt)
 			st2 = fdt.t[st2]
 		end
 		wc += 1
-		if wc > 255 then
+		if toSigned(wc) > 255 then
 			error("invalid zstd data")
 		end
 	else
-		wc = hb - 127
+		wc = toSigned(hb - 127)
 		while i < wc do
 			local _exp = dat
 			bt += 1
 			local byte = _exp[bt]
-			hw[i] = bit32.arshift(byte, 4)
-			hw[i + 1] = bit32.band(byte, 15)
+			hw[i] = toSigned(bit32.arshift(byte, 4))
+			hw[i + 1] = toSigned(bit32.band(byte, 15))
 			i += 2
 		end
 		bt += 1
@@ -620,36 +623,36 @@ local rhu = function(dat, bt)
 		end
 		local _condition = wt
 		if _condition ~= 0 and _condition == _condition and _condition then
-			_condition = (bit32.lshift(1, (wt - 1)))
+			_condition = toSigned((bit32.lshift(1, (toSigned(wt - 1)))))
 		end
 		wes += _condition
 	end
 	-- max bits
 	local mb = msb(wes) + 1
 	-- table size
-	local ts = bit32.lshift(1, mb)
+	local ts = toSigned(bit32.lshift(1, mb))
 	-- remaining sum
-	local rem = ts - wes
+	local rem = toSigned(ts - wes)
 	-- must be power of 2
-	local _value = bit32.band(rem, (rem - 1))
+	local _value = bit32.band(toSigned(rem), toSigned(rem - 1))
 	if _value ~= 0 and _value == _value and _value then
 		error("invalid zstd data")
 	end
 	local _original = wc
 	wc += 1
-	hw[_original] = msb(rem) + 1
+	hw[_original] = toSigned(msb(rem) + 1)
 	for n = 0, wc - 1 do
 		i = n
 		local wt = hw[i]
 		local _condition = wt
 		if _condition ~= 0 and _condition == _condition and _condition then
-			_condition = (mb + 1 - wt)
+			_condition = (toSigned(mb + 1 - wt))
 		end
 		hw[i] = _condition
-		rc[hw[i]] += 1
+		rc[toSigned(hw[i])] += 1
 	end
 	-- huf buf
-	local hbuf = u8.new(bit32.lshift(ts, 1))
+	local hbuf = u8.new(toSigned(bit32.lshift(ts, 1)))
 	--    symbols                      num bits
 	local syms = hbuf:subarray(0, ts)
 	local nb = hbuf:subarray(ts)
@@ -659,7 +662,7 @@ local rhu = function(dat, bt)
 		local pv = ri[i]
 		local _exp = i
 		local _index = i - 1
-		ri[_index] = pv + rc[i] * (bit32.lshift(1, (mb - i)))
+		ri[_index] = toSigned(toSigned(pv) + toSigned(rc[i] * (toSigned(bit32.lshift(1, (toSigned(mb - i)))))))
 		nb:fill(_exp, pv, ri[_index])
 	end
 	if tonumber(ri[0]) ~= tonumber(ts) then
@@ -671,7 +674,7 @@ local rhu = function(dat, bt)
 		if bits ~= 0 and bits == bits and bits then
 			local code = ri[bits]
 			local _exp = i
-			ri[bits] = code + (bit32.lshift(1, (mb - bits)))
+			ri[bits] = toSigned(toSigned(code) + toSigned(bit32.lshift(1, (toSigned(mb - bits)))))
 			syms:fill(_exp, code, ri[bits])
 		end
 	end
@@ -706,7 +709,7 @@ local b2bl = function(b, s)
 	local bl = i32.new(len)
 	for i = 0, len - 1 do
 		bl[i] = s
-		s += bit32.lshift(1, b[i])
+		s += toSigned(bit32.lshift(1, b[i]))
 	end
 	return bl
 end
@@ -723,19 +726,19 @@ local dhu = function(dat, out, hu)
 	local len = getn(dat)
 	local ss = getn(out)
 	local lb = dat[len - 1]
-	local msk = (bit32.lshift(1, hu.b)) - 1
+	local msk = toSigned((bit32.lshift(1, hu.b)) - 1)
 	local eb = -hu.b
 	if not (lb ~= 0 and lb == lb and lb) then
 		error("invalid zstd data")
 	end
 	local st = 0
 	local btr = hu.b
-	local pos = (bit32.lshift(len, 3)) - 8 + msb(lb) - btr
+	local pos = toSigned((bit32.lshift(len, 3)) - 8 + msb(lb) - btr)
 	local i = -1
 	while pos > eb and i < ss do
-		local cbt = bit32.arshift(pos, 3)
-		local val = (bit32.arshift(rb(dat, cbt, 3), (bit32.band(pos, 7))))
-		st = bit32.band((bit32.bor((bit32.lshift(st, btr)), val)), msk)
+		local cbt = toSigned(bit32.arshift(pos, 3))
+		local val = toSigned(bit32.arshift(rb(dat, cbt, 3), toSigned(bit32.band(pos, 7))))
+		st = bit32.band(toSigned(bit32.bor(toSigned(bit32.lshift(st, btr)), val)), msk)
 		local _exp = out
 		i += 1
 		_exp[i] = hu.s[st]
@@ -751,9 +754,9 @@ end
 local dhu4 = function(dat, out, hu)
 	local bt = 6
 	local ss = getn(out)
-	local sz1 = bit32.arshift((ss + 3), 2)
-	local sz2 = bit32.lshift(sz1, 1)
-	local sz3 = sz1 + sz2
+	local sz1 = toSigned(bit32.arshift((ss + 3), 2))
+	local sz2 = toSigned(bit32.lshift(sz1, 1))
+	local sz3 = toSigned(sz1 + sz2)
 	local _dat = dat
 	local _exp = bt
 	bt += rb(dat, 0, 2)
@@ -773,9 +776,9 @@ local rzb = function(dat, st, out)
 	local bt = st.b
 	--    byte 0        block type
 	local b0 = dat[bt]
-	local btype = bit32.band((bit32.arshift(b0, 1)), 3)
-	st.l = bit32.band(b0, 1)
-	local sz = bit32.bor(bit32.bor((bit32.arshift(b0, 3)), (bit32.lshift(dat[bt + 1], 5))), (bit32.lshift(dat[bt + 2], 13)))
+	local btype = toSigned(bit32.band(toSigned(bit32.arshift(b0, 1)), 3))
+	st.l = toSigned(bit32.band(b0, 1))
+	local sz = toSigned((bit32.bor(bit32.bor(toSigned(bit32.arshift(b0, 3)), toSigned(bit32.lshift(dat[bt + 1], 5))), toSigned(bit32.lshift(dat[bt + 2], 13)))))
 	-- end byte for block
 	bt += 3
 	local ebt = bt + sz
@@ -809,10 +812,10 @@ local rzb = function(dat, st, out)
 	if tonumber(btype) == 2 then
 		--    byte 3        lit btype     size format
 		local b3 = dat[bt]
-		local lbt = bit32.band(b3, 3)
-		local sf = bit32.band((bit32.arshift(b3, 2)), 3)
+		local lbt = toSigned(bit32.band(b3, 3))
+		local sf = toSigned(bit32.band((bit32.arshift(b3, 2)), 3))
 		-- lit src size  lit cmp sz 4 streams
-		local lss = bit32.arshift(b3, 4)
+		local lss = toSigned(bit32.arshift(b3, 4))
 		local lcs = 0
 		local s4 = 0
 		if lbt < 2 then
@@ -821,16 +824,16 @@ local rzb = function(dat, st, out)
 				local _readable = lss
 				local _exp = dat
 				bt += 1
-				local _exp_1 = (bit32.lshift(_exp[bt], 4))
+				local _exp_1 = toSigned(bit32.lshift(_exp[bt], 4))
 				local _condition = (bit32.band(sf, 2))
 				if _condition ~= 0 and _condition == _condition and _condition then
 					local _exp_2 = dat
 					bt += 1
-					_condition = (bit32.lshift(_exp_2[bt], 12))
+					_condition = toSigned(bit32.lshift(_exp_2[bt], 12))
 				end
-				lss = bit32.bor(_readable, bit32.bor(_exp_1, _condition))
+				lss = bit32.bor(_readable, toSigned(bit32.bor(_exp_1, toSigned(_condition))))
 			else
-				lss = bit32.arshift(b3, 3)
+				lss = toSigned(bit32.arshift(b3, 3))
 			end
 		else
 			s4 = sf
@@ -838,43 +841,43 @@ local rzb = function(dat, st, out)
 				local _readable = lss
 				local _exp = dat
 				bt += 1
-				lss = bit32.bor(_readable, (bit32.lshift((bit32.band(_exp[bt], 63)), 4)))
+				lss = bit32.bor(_readable, toSigned((bit32.lshift((bit32.band(_exp[bt], 63)), 4))))
 				local _exp_1 = lss
-				local _exp_2 = (bit32.arshift(dat[bt], 6))
+				local _exp_2 = toSigned(bit32.arshift(dat[bt], 6))
 				local _exp_3 = dat
 				bt += 1
-				lcs = bit32.bor(_exp_2, (bit32.lshift(_exp_3[bt], 2)))
+				lcs = toSigned(bit32.bor(_exp_2, toSigned(bit32.lshift(_exp_3[bt], 2))))
 				local _ = lcs
 			elseif tonumber(sf) == 2 then
 				local _readable = lss
 				local _exp = dat
 				bt += 1
-				local _exp_1 = (bit32.lshift(_exp[bt], 4))
+				local _exp_1 = toSigned(bit32.lshift(_exp[bt], 4))
 				local _exp_2 = dat
 				bt += 1
-				lss = bit32.bor(_readable, bit32.bor(_exp_1, (bit32.lshift((bit32.band(_exp_2[bt], 3)), 12))))
+				lss = bit32.bor(_readable, bit32.bor(_exp_1, toSigned(bit32.lshift((bit32.band(_exp_2[bt], 3)), 12))))
 				local _exp_3 = lss
-				local _exp_4 = (bit32.arshift(dat[bt], 2))
+				local _exp_4 = toSigned(bit32.arshift(dat[bt], 2))
 				local _exp_5 = dat
 				bt += 1
-				lcs = bit32.bor(_exp_4, (bit32.lshift(_exp_5[bt], 6)))
+				lcs = toSigned(bit32.bor(_exp_4, toSigned(bit32.lshift(_exp_5[bt], 6))))
 				local _ = lcs
 			else
 				local _readable = lss
 				local _exp = dat
 				bt += 1
-				local _exp_1 = (bit32.lshift(_exp[bt], 4))
+				local _exp_1 = toSigned(bit32.lshift(_exp[bt], 4))
 				local _exp_2 = dat
 				bt += 1
-				lss = bit32.bor(_readable, bit32.bor(_exp_1, (bit32.lshift((bit32.band(_exp_2[bt], 63)), 12))))
+				lss = bit32.bor(_readable, bit32.bor(_exp_1, toSigned(bit32.lshift((bit32.band(_exp_2[bt], 63)), 12))))
 				local _exp_3 = lss
-				local _exp_4 = (bit32.arshift(dat[bt], 6))
+				local _exp_4 = toSigned(bit32.arshift(dat[bt], 6))
 				local _exp_5 = dat
 				bt += 1
-				local _exp_6 = bit32.bor(_exp_4, (bit32.lshift(_exp_5[bt], 2)))
+				local _exp_6 = bit32.bor(_exp_4, toSigned(bit32.lshift(_exp_5[bt], 2)))
 				local _exp_7 = dat
 				bt += 1
-				lcs = bit32.bor(_exp_6, (bit32.lshift(_exp_7[bt], 10)))
+				lcs = toSigned(bit32.bor(_exp_6, toSigned(bit32.lshift(_exp_7[bt], 10))))
 				local _ = lcs
 			end
 		end
@@ -882,7 +885,7 @@ local rzb = function(dat, st, out)
 		-- add literals to end - can never overlap with backreferences because unused literals always appended
 		local buf = if out then out:subarray(st.y, st.y + st.m) else u8.new(st.m)
 		-- starting point for literals
-		local spl = getn(buf) - lss
+		local spl = toSigned(getn(buf) - lss)
 		if tonumber(lbt) == 0 then
 			local _buf = buf
 			local _dat = dat
@@ -903,7 +906,7 @@ local rzb = function(dat, st, out)
 				-- subtract description length
 				local _exp = bt
 				bt = hud[1]
-				lcs += _exp - bt
+				lcs += toSigned(_exp - bt)
 				hu = hud[2]
 				st.h = hu
 			elseif not hu then
@@ -929,26 +932,26 @@ local rzb = function(dat, st, out)
 				local _exp_3 = dat
 				local _original_2 = bt
 				bt += 1
-				ns = (bit32.bor(_exp_2, (bit32.lshift(_exp_3[_original_2], 8)))) + 0x7F00
+				ns = toSigned((bit32.bor(_exp_2, toSigned(bit32.lshift(_exp_3[_original_2], 8)))) + 0x7F00)
 			elseif ns > 127 then
 				local _exp_1 = (bit32.lshift((ns - 128), 8))
 				local _exp_2 = dat
 				local _original_1 = bt
 				bt += 1
-				ns = bit32.bor(_exp_1, _exp_2[_original_1])
+				ns = toSigned(bit32.bor(_exp_1, _exp_2[_original_1]))
 			end
 			-- symbol compression modes
 			local _exp_1 = dat
 			local _original_1 = bt
 			bt += 1
 			local scm = _exp_1[_original_1]
-			local _value = bit32.band(scm, 3)
+			local _value = bit32.band(toSigned(scm), 3)
 			if _value ~= 0 and _value == _value and _value then
 				error("invalid zstd data")
 			end
 			local dts = { dmlt, doct, dllt }
 			for i = 2, 0, -1 or 1 do
-				local md = bit32.band((bit32.arshift(scm, ((bit32.lshift(i, 1)) + 2))), 3)
+				local md = toSigned(bit32.band((bit32.arshift(scm, toSigned((bit32.lshift(i, 1)) + 2))), 3))
 				if tonumber(md) == 1 then
 					-- rle buf
 					local _exp_2 = dat
@@ -963,7 +966,7 @@ local rzb = function(dat, st, out)
 					}
 				elseif tonumber(md) == 2 then
 					-- accuracy log 8 for offsets, 9 for others
-					local _binding = rfse(dat, bt, 9 - (bit32.band(i, 1)))
+					local _binding = rfse(dat, bt, toSigned(9 - (bit32.band(i, 1))))
 					bt = _binding[1]
 					dts[i + 1] = _binding[2]
 				elseif tonumber(md) == 3 then
@@ -982,16 +985,16 @@ local rzb = function(dat, st, out)
 			if not (lb ~= 0 and lb == lb and lb) then
 				error("invalid zstd data")
 			end
-			local spos = (bit32.lshift(ebt, 3)) - 8 + msb(lb) - llt.b
-			local cbt = bit32.arshift(spos, 3)
+			local spos = toSigned((bit32.lshift(ebt, 3)) - 8 + msb(lb) - llt.b)
+			local cbt = toSigned(bit32.arshift(spos, 3))
 			local oubt = 0
-			local lst = bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(spos, 7)))), ((bit32.lshift(1, llt.b)) - 1))
+			local lst = toSigned(bit32.band(toSigned(bit32.arshift(rb(dat, cbt, 2), toSigned(bit32.band(spos, 7)))), (toSigned(bit32.lshift(1, llt.b)) - 1)))
 			spos -= oct.b
-			cbt = bit32.arshift(spos, 3)
-			local ost = bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(spos, 7)))), ((bit32.lshift(1, oct.b)) - 1))
+			cbt = toSigned(bit32.arshift(spos, 3))
+			local ost = toSigned(bit32.band(toSigned(bit32.arshift(rb(dat, cbt, 2), toSigned(bit32.band(spos, 7)))), (toSigned(bit32.lshift(1, oct.b)) - 1)))
 			spos -= mlt.b
-			cbt = bit32.arshift(spos, 3)
-			local mst = bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(spos, 7)))), ((bit32.lshift(1, mlt.b)) - 1))
+			cbt = toSigned(bit32.arshift(spos, 3))
+			local mst = toSigned(bit32.band(toSigned(bit32.arshift(rb(dat, cbt, 2), toSigned(bit32.band(spos, 7)))), (toSigned(bit32.lshift(1, mlt.b)) - 1)))
 			ns += 1
 			while true do
 				ns -= 1
@@ -1005,34 +1008,35 @@ local rzb = function(dat, st, out)
 				local ofc = oct.s[ost]
 				local obtr = oct.n[ost]
 				spos -= ofc
-				cbt = bit32.arshift(spos, 3)
-				local ofp = bit32.lshift(1, ofc)
-				local off = ofp + (bit32.band((bit32.rshift(rb(dat, cbt, 4), (bit32.band(spos, 7)))), (ofp - 1)))
+				cbt = toSigned(bit32.arshift(spos, 3))
+				local ofp = toSigned(bit32.lshift(1, ofc))
+				local off = toSigned(ofp + toSigned(bit32.band((bit32.rshift(rb(dat, cbt, 4), toSigned(bit32.band(spos, 7)))), (ofp - 1))))
 				spos -= mlb[mlc]
-				cbt = bit32.arshift(spos, 3)
-				local ml = mlbl[mlc] + (bit32.band((bit32.arshift(rb(dat, cbt, 3), (bit32.band(spos, 7)))), ((bit32.lshift(1, mlb[mlc])) - 1)))
+				cbt = toSigned(bit32.arshift(spos, 3))
+				local ml = toSigned(mlbl[mlc] + toSigned(bit32.band((bit32.arshift(rb(dat, cbt, 3), toSigned(bit32.band(spos, 7)))), (toSigned(bit32.lshift(1, mlb[mlc])) - 1))))
 				spos -= llb[llc]
-				cbt = bit32.arshift(spos, 3)
-				local ll = llbl[llc] + (bit32.band((bit32.arshift(rb(dat, cbt, 3), (bit32.band(spos, 7)))), ((bit32.lshift(1, llb[llc])) - 1)))
+				cbt = toSigned(bit32.arshift(spos, 3))
+				local ll = toSigned(llbl[llc] + toSigned(bit32.band((bit32.arshift(rb(dat, cbt, 3), toSigned(bit32.band(spos, 7)))), (toSigned(bit32.lshift(1, llb[llc])) - 1))))
 				spos -= lbtr
-				cbt = bit32.arshift(spos, 3)
-				lst = llt.t[lst] + (bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(spos, 7)))), ((bit32.lshift(1, lbtr)) - 1)))
+				cbt = toSigned(bit32.arshift(spos, 3))
+				lst = toSigned(llt.t[lst] + toSigned(bit32.band((bit32.arshift(rb(dat, cbt, 2), toSigned(bit32.band(spos, 7)))), (toSigned(bit32.lshift(1, lbtr)) - 1))))
 				spos -= mbtr
-				cbt = bit32.arshift(spos, 3)
-				mst = mlt.t[mst] + (bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(spos, 7)))), ((bit32.lshift(1, mbtr)) - 1)))
+				cbt = toSigned(bit32.arshift(spos, 3))
+				mst = toSigned(mlt.t[mst] + toSigned(bit32.band((bit32.arshift(rb(dat, cbt, 2), toSigned(bit32.band(spos, 7)))), (toSigned(bit32.lshift(1, mbtr)) - 1))))
 				spos -= obtr
-				cbt = bit32.arshift(spos, 3)
-				ost = oct.t[ost] + (bit32.band((bit32.arshift(rb(dat, cbt, 2), (bit32.band(spos, 7)))), ((bit32.lshift(1, obtr)) - 1)))
-				if off > 3 then
+				cbt = toSigned(bit32.arshift(spos, 3))
+				ost = toSigned(oct.t[ost] + toSigned(bit32.band((bit32.arshift(rb(dat, cbt, 2), toSigned(bit32.band(spos, 7)))), (toSigned(bit32.lshift(1, obtr)) - 1))))
+				if toSigned(off) > 3 then
 					st.o[2] = st.o[1]
 					st.o[1] = st.o[0]
 					off -= 3
-					st.o[0] = off
+					st.o[0] = toSigned(off)
 				else
-					local idx = off - (tonumber(ll) ~= 0)
-					if idx ~= 0 and idx == idx and idx then
-						off = if tonumber(idx) == 3 then st.o[0] - 1 else st.o[idx]
-						if idx > 1 then
+					local idx = toSigned(off - (if toSigned(ll) ~= 0 then 1 else 0))
+					local _value_1 = toSigned(idx)
+					if _value_1 ~= 0 and _value_1 == _value_1 and _value_1 then
+						off = toSigned(if tonumber(idx) == 3 then st.o[0] - 1 else st.o[idx])
+						if toSigned(idx) > 1 then
 							st.o[2] = st.o[1]
 						end
 						st.o[1] = st.o[0]
@@ -1048,11 +1052,11 @@ local rzb = function(dat, st, out)
 				local _exp_2 = oubt
 				spl += ll
 				local _ = spl
-				local stin = oubt - off
+				local stin = toSigned(oubt - off)
 				if stin < 0 then
 					local len = -stin
-					local bs = st.e + stin
-					if len > ml then
+					local bs = toSigned(st.e + stin)
+					if toSigned(len) > ml then
 						len = ml
 					end
 					for i = 0, len - 1 do
@@ -1070,7 +1074,7 @@ local rzb = function(dat, st, out)
 				end
 				oubt += ml
 			end
-			if tonumber(oubt) ~= tonumber(spl) then
+			if toSigned(oubt) ~= toSigned(spl) then
 				while spl < getn(buf) do
 					local _exp_2 = buf
 					local _original_2 = oubt
@@ -1179,7 +1183,7 @@ local function decompress(data, decompressedSize)
 					st.w:set(blk, getn(st.w) - getn(blk))
 				end
 			end
-			bt = st.b + (st.c * 4)
+			bt = toSigned(st.b + toSigned(st.c * 4))
 		else
 			bt = st
 		end
