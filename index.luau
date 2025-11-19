@@ -361,7 +361,7 @@ local rzfh = function(dat, w)
 		-- frame size bytes
 		local fsb = if fcf ~= 0 and fcf == fcf and fcf then (bit32.lshift(1, fcf)) else ss
 		-- frame source size
-		local fss = rb(dat, bt, fsb) + (if ((tonumber(fcf) == 1) and 256) then 1 else 0)
+		local fss = rb(dat, bt, fsb) + (if (tonumber(fcf) == 1) then 256 else 0)
 		-- window size
 		local ws = fss
 		if not (ss ~= 0 and ss == ss and ss) then
