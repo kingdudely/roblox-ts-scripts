@@ -327,6 +327,11 @@ local i32 = Int32Array
 local function toSigned(x)
 	return if x >= 0x80000000 then x - 0x100000000 else x
 end
+local function toBuffer(x)
+	local result = buffer.create(x.byteLength)
+	buffer.copy(result, 0, x.buffer, x.byteOffset, x.byteLength)
+	return result
+end
 local rb = function(d, b, n)
 	local o = 0
 	for i = 0, n - 1 do
@@ -338,6 +343,40 @@ local rb = function(d, b, n)
 	end
 	--   for (; i < n; ++i) o |= d[b++] << (i << 3);
 	return o
+end
+-- apply a dictionary to decompressor state
+local rhu, rfse
+local rdic = function(dic, st)
+	if rb(dic, 0, 4) == 0xec30a437 then
+		local _condition = st.d
+		if _condition ~= 0 and _condition == _condition and _condition then
+			_condition = st.d ~= rb(dic, 4, 4)
+		end
+		if _condition ~= 0 and _condition == _condition and _condition then
+			error("wrong dictionary")
+		end
+		local bt = 8
+		local _binding = rhu(dic, bt)
+		bt = _binding[1]
+		st.h = _binding[2]
+		local mlt
+		local olt
+		local llt
+		local _binding_1 = rfse(dic, bt, 8)
+		bt = _binding_1[1]
+		olt = _binding_1[2]
+		local _binding_2 = rfse(dic, bt, 9)
+		bt = _binding_2[1]
+		mlt = _binding_2[2]
+		local _binding_3 = rfse(dic, bt, 9)
+		bt = _binding_3[1]
+		llt = _binding_3[2]
+		st.t = { mlt, olt, llt }
+		st.o = i32.new({ rb(dic, bt, 4), rb(dic, bt + 4, 4), rb(dic, bt + 8, 4) })
+		dic = dic:subarray(bt + 12)
+	end
+	st.w = dic:slice()
+	st.e = getn(dic)
 end
 -- read Zstandard frame header
 local rzfh = function(dat, w)
@@ -419,7 +458,7 @@ local msb = function(val)
 	return bits - 1
 end
 -- read finite state entropy
-local rfse = function(dat, bt, mal)
+rfse = function(dat, bt, mal)
 	-- table pos
 	local tpos = toSigned(bit32.lshift(bt, 3)) + 4
 	-- accuracy log
@@ -539,7 +578,7 @@ local rfse = function(dat, bt, mal)
 	} }
 end
 -- read huffman
-local rhu = function(dat, bt)
+rhu = function(dat, bt)
 	--  index  weight count
 	local i = 0
 	local wc = -1
@@ -1132,10 +1171,16 @@ end
 	 * @returns The decompressed data
 	 
 ]]
-local function decompress(data, decompressedSize)
+local function decompress(data, decompressedSize, dictionary)
+	local _data = data
+	if not (type(_data) == "buffer") then
+		error("expected buffer")
+	end
+	local _dictionary = dictionary
+	local dic = if type(_dictionary) == "buffer" then u8.new(dictionary) else nil
 	local _decompressedSize = decompressedSize
-	local buf = if type(_decompressedSize) == "number" then Uint8Array.new(decompressedSize) else nil
-	local dat = Uint8Array.new(data)
+	local buf = if type(_decompressedSize) == "number" then u8.new(decompressedSize) else nil
+	local dat = u8.new(data)
 	local bufs = {}
 	local nb = if not buf then 1 else 0
 	local bt = 0
@@ -1152,6 +1197,16 @@ local function decompress(data, decompressedSize)
 		end
 		local st = rzfh(_exp, _condition)
 		if type(st) == "table" then
+			local _condition_1 = st.d
+			if _condition_1 ~= 0 and _condition_1 == _condition_1 and _condition_1 then
+				_condition_1 = not dic
+			end
+			if _condition_1 ~= 0 and _condition_1 == _condition_1 and _condition_1 then
+				error("wrong dictionary")
+			end
+			if dic then
+				rdic(dic, st)
+			end
 			if nb ~= 0 and nb == nb and nb then
 				buf = nil
 				if tonumber(getn(st.w)) == tonumber(st.u) then
@@ -1189,11 +1244,179 @@ local function decompress(data, decompressedSize)
 		end
 		dat = dat:subarray(bt)
 	end
-	local u8result = cct(bufs, ol)
-	local result = buffer.create(u8result.byteLength)
-	buffer.copy(result, 0, u8result.buffer, u8result.byteOffset, u8result.byteLength)
-	return result
+	return toBuffer(cct(bufs, ol))
+end
+--[[
+	*
+	 * Callback to handle data in Zstandard streams
+	 * @param data The data that was (de)compressed
+	 * @param final Whether this is the last chunk in the stream
+	 
+]]
+--[[
+	*
+	 * Decompressor for Zstandard streamed data
+	 
+]]
+local Decompress
+do
+	Decompress = setmetatable({}, {
+		__tostring = function()
+			return "Decompress"
+		end,
+	})
+	Decompress.__index = Decompress
+	function Decompress.new(...)
+		local self = setmetatable({}, Decompress)
+		return self:constructor(...) or self
+	end
+	function Decompress:constructor(ondata)
+		self.ondata = ondata
+		self.c = {}
+		self.l = 0
+		self.z = 0
+	end
+	function Decompress:loadDictionary(dic)
+		local _dic = dic
+		if not (type(_dic) == "buffer") then
+			error("expected buffer")
+		end
+		self.d = u8.new(dic)
+	end
+	function Decompress:push(buf, final)
+		local _buf = buf
+		if not (type(_buf) == "buffer") then
+			error("expected buffer")
+		end
+		local chunk = u8.new(buf)
+		local _s = self.s
+		if type(_s) == "number" then
+			local sub = math.min(getn(chunk), self.s)
+			chunk = chunk:subarray(sub)
+			self.s -= sub
+		end
+		local sl = getn(chunk)
+		local ncs = sl + self.l
+		local _value = self.s
+		if not (_value ~= 0 and _value == _value and _value) then
+			if final then
+				if not (ncs ~= 0 and ncs == ncs and ncs) then
+					self.ondata(u8.new(0), true)
+					return nil
+				end
+				-- min for frame + one block
+				if ncs < 5 then
+					error("unexpected EOF")
+				end
+			elseif ncs < 18 then
+				local _c = self.c
+				local _chunk = chunk
+				table.insert(_c, _chunk)
+				self.l = ncs
+				return nil
+			end
+			local _value_1 = self.l
+			if _value_1 ~= 0 and _value_1 == _value_1 and _value_1 then
+				local _c = self.c
+				local _chunk = chunk
+				table.insert(_c, _chunk)
+				chunk = cct(self.c, ncs)
+				self.c = {}
+				self.l = 0
+			end
+			self.s = rzfh(chunk)
+			local _arg0 = (self.s)
+			if type(_arg0) == "number" then
+				return self:push(toBuffer(chunk), final)
+			end
+			local _condition = self.s.d
+			if _condition ~= 0 and _condition == _condition and _condition then
+				_condition = not self.d
+			end
+			if _condition ~= 0 and _condition == _condition and _condition then
+				error("wrong dictionary")
+			end
+			if self.d then
+				rdic(self.d, self.s)
+			end
+		end
+		local _s_1 = self.s
+		if not (type(_s_1) == "number") then
+			local _condition = self.z
+			if not (_condition ~= 0 and _condition == _condition and _condition) then
+				_condition = 3
+			end
+			if ncs < _condition then
+				if final then
+					error("unexpected EOF")
+				end
+				local _c = self.c
+				local _chunk = chunk
+				table.insert(_c, _chunk)
+				self.l = ncs
+				return nil
+			end
+			local _value_1 = self.l
+			if _value_1 ~= 0 and _value_1 == _value_1 and _value_1 then
+				local _c = self.c
+				local _chunk = chunk
+				table.insert(_c, _chunk)
+				chunk = cct(self.c, ncs)
+				self.c = {}
+				self.l = 0
+			end
+			local _value_2 = self.z
+			local _condition_1 = not (_value_2 ~= 0 and _value_2 == _value_2 and _value_2)
+			if _condition_1 then
+				local _value_3 = (bit32.band(chunk[(self.s).b], 2))
+				self.z = if _value_3 ~= 0 and _value_3 == _value_3 and _value_3 then 4 else 3 + (bit32.bor(bit32.bor((bit32.arshift(chunk[(self.s).b], 3)), (bit32.lshift(chunk[(self.s).b + 1], 5))), (bit32.lshift(chunk[(self.s).b + 2], 13))))
+				_condition_1 = ncs < (self.z)
+			end
+			if _condition_1 then
+				if final then
+					error("unexpected EOF")
+				end
+				local _c = self.c
+				local _chunk = chunk
+				table.insert(_c, _chunk)
+				self.l = ncs
+				return nil
+			else
+				self.z = 0
+			end
+			while true do
+				local blk = rzb(chunk, self.s)
+				if not blk then
+					if final then
+						error("unexpected EOF")
+					end
+					local adc = chunk:subarray((self.s).b);
+					(self.s).b = 0
+					local _exp = self.c
+					table.insert(_exp, adc)
+					local _exp_1 = #_exp
+					self.l += getn(adc)
+					local _ = self.l
+					return nil
+				else
+					self.ondata(blk, false);
+					(self.s).w:copyWithin(0, getn(blk));
+					(self.s).w:set(blk, getn((self.s).w) - getn(blk))
+				end
+				local _value_3 = (self.s).l
+				if _value_3 ~= 0 and _value_3 == _value_3 and _value_3 then
+					local rest = chunk:subarray((self.s).b)
+					self.s = (self.s).c * 4
+					self:push(toBuffer(rest), final)
+					return nil
+				end
+			end
+		elseif final then
+			error("unexpected EOF")
+		end
+	end
 end
 return {
 	decompress = decompress,
+	Decompress = Decompress,
 }
