@@ -1019,7 +1019,7 @@ export function decompress(data: buffer, decompressedSize ? : number, dictionary
  * @param data The data that was (de)compressed
  * @param final Whether this is the last chunk in the stream
  */
-export type ZstdStreamHandler = (data: Uint8Array, final ? : boolean) => unknown;
+export type ZstdStreamHandler = (data: buffer, final ? : boolean) => unknown;
 
 /**
  * Decompressor for Zstandard streamed data
@@ -1069,7 +1069,7 @@ export class Decompress {
 		if (!this.s) {
 			if (final) {
 				if (!ncs) {
-					this.ondata(new u8(0), true);
+					this.ondata(toBuffer(new u8(0)), true);
 					return;
 				}
 				// min for frame + one block
@@ -1117,9 +1117,11 @@ export class Decompress {
 					this.c.push(adc), this.l += getn(adc);
 					return;
 				} else {
-					this.ondata(blk, false);
-					(this.s as DZstdState).w.copyWithin(0, getn(blk));
-					(this.s as DZstdState).w.set(blk, getn((this.s as DZstdState).w) - getn(blk));
+					const blk1 = new Uint8Array(toBuffer(blk));  // create a full copy
+
+					this.ondata(blk1.buffer, false);
+					(this.s as DZstdState).w.copyWithin(0, getn(blk1));
+					(this.s as DZstdState).w.set(blk1, getn((this.s as DZstdState).w) - getn(blk1));
 				}
 				if ((this.s as DZstdState).l) {
 					const rest = chunk.subarray((this.s as DZstdState).b);
