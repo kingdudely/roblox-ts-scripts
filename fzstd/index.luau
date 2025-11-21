@@ -1,7 +1,6 @@
 -- Compiled with roblox-ts v3.0.0
 local function getn(t)
-	error("make getn return #t")
-	return 0
+	return #t
 end
 local function toSigned(x)
 	return if x >= 0x80000000 then x - 0x100000000 else x
